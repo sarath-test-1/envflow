@@ -1,0 +1,16 @@
+services:
+  app:
+    build:
+      target: development
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/app
+      - /app/node_modules
+    command: npm run dev
+    restart: "no"
+
+  postgres:
+    ports:
+      - "5432:5432"
+    restart: "no"

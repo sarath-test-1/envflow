@@ -41,20 +41,51 @@ jobs:
           chmod 600 ~/.ssh/envflow_deploy
           ssh-keyscan -p ${{ secrets.STAGING_PORT }} localhost >> ~/.ssh/known_hosts
 
+      - name: Copy env file to staging server
+        run: |
+          echo "${{ secrets.STAGING_ENV }}" > /tmp/.env.staging
+          scp -i ~/.ssh/envflow_deploy \
+              -P ${{ secrets.STAGING_PORT }} \
+              -o StrictHostKeyChecking=no \
+              /tmp/.env.staging \
+              root@${{ secrets.STAGING_HOST }}:/app/envflow/.env.staging || true
+
       - name: Deploy to staging server
         run: |
           ssh -i ~/.ssh/envflow_deploy \
               -p ${{ secrets.STAGING_PORT }} \
               -o StrictHostKeyChecking=no \
               root@${{ secrets.STAGING_HOST }} \
-              "bash -s" < scripts/deploy.sh staging \
-              https://github.com/sarath-test-1/envflow.git \
-              "${{ secrets.STAGING_ENV }}"
+              "mkdir -p /app/envflow && bash -s" < scripts/deploy.sh staging \
+              https://github.com/sarath-test-1/envflow.git
+
+      - name: Copy env file again after clone
+        run: |
+          scp -i ~/.ssh/envflow_deploy \
+              -P ${{ secrets.STAGING_PORT }} \
+              -o StrictHostKeyChecking=no \
+              /tmp/.env.staging \
+              root@${{ secrets.STAGING_HOST }}:/app/envflow/.env.staging
+
+      - name: Start containers
+        run: |
+          ssh -i ~/.ssh/envflow_deploy \
+              -p ${{ secrets.STAGING_PORT }} \
+              -o StrictHostKeyChecking=no \
+              root@${{ secrets.STAGING_HOST }} << 'EOF'
+                cd /app/envflow
+                docker compose \
+                  -f docker-compose.yml \
+                  -f docker-compose.staging.yml \
+                  --env-file .env.staging \
+                  -p envflow-staging \
+                  up -d --build
+          EOF
 
       - name: Health check staging
         run: |
           echo "Waiting for staging to be ready..."
-          sleep 10
+          sleep 15
           for i in {1..5}; do
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3001/health)
             if [ "$STATUS" = "200" ]; then
@@ -85,44 +116,75 @@ jobs:
   # JOB 4 — Deploy to production
   # ─────────────────────────────────────────
   deploy-prod:
-    name: Deploy to Production
-    runs-on: self-hosted
-    needs: approve-prod
+      name: Deploy to Production
+      runs-on: self-hosted
+      needs: test
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      steps:
+        - name: Checkout code
+          uses: actions/checkout@v4
 
-      - name: Setup SSH key
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/envflow_deploy
-          chmod 600 ~/.ssh/envflow_deploy
-          ssh-keyscan -p ${{ secrets.PROD_PORT }} localhost >> ~/.ssh/known_hosts
+        - name: Setup SSH key
+          run: |
+            mkdir -p ~/.ssh
+            echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/envflow_deploy
+            chmod 600 ~/.ssh/envflow_deploy
+            ssh-keyscan -p ${{ secrets.PROD_PORT }} localhost >> ~/.ssh/known_hosts
 
-      - name: Deploy to prod server
-        run: |
-          ssh -i ~/.ssh/envflow_deploy \
-              -p ${{ secrets.PROD_PORT }} \
-              -o StrictHostKeyChecking=no \
-              root@${{ secrets.PROD_HOST }} \
-              "bash -s" < scripts/deploy.sh prod \
-              https://github.com/sarath-test-1/envflow.git \
-              "${{ secrets.PROD_ENV }}"
+        - name: Copy env file to production server
+          run: |
+            echo "${{ secrets.PROD_ENV }}" > /tmp/.env.prod
+            scp -i ~/.ssh/envflow_deploy \
+                -P ${{ secrets.PROD_PORT }} \
+                -o StrictHostKeyChecking=no \
+                /tmp/.env.prod \
+                root@${{ secrets.PROD_HOST }}:/app/envflow/.env.prod || true
 
-      - name: Health check production
-        run: |
-          echo "Waiting for production to be ready..."
-          sleep 10
-          for i in {1..5}; do
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3002/health)
-            if [ "$STATUS" = "200" ]; then
-              echo "Production is healthy!"
-              curl -s http://localhost:3002/health
-              exit 0
-            fi
-            echo "Attempt $i failed (status: $STATUS), retrying..."
-            sleep 5
-          done
-          echo "Production health check failed!"
-          exit 1
+        - name: Deploy to production server
+          run: |
+            ssh -i ~/.ssh/envflow_deploy \
+                -p ${{ secrets.PROD_PORT }} \
+                -o StrictHostKeyChecking=no \
+                root@${{ secrets.PROD_HOST }} \
+                "mkdir -p /app/envflow && bash -s" < scripts/deploy.sh prod \
+                https://github.com/sarath-test-1/envflow.git
+
+        - name: Copy env file again after clone
+          run: |
+            scp -i ~/.ssh/envflow_deploy \
+                -P ${{ secrets.PROD_PORT }} \
+                -o StrictHostKeyChecking=no \
+                /tmp/.env.prod \
+                root@${{ secrets.PROD_HOST }}:/app/envflow/.env.prod
+
+        - name: Start containers
+          run: |
+            ssh -i ~/.ssh/envflow_deploy \
+                -p ${{ secrets.PROD_PORT }} \
+                -o StrictHostKeyChecking=no \
+                root@${{ secrets.PROD_HOST }} << 'EOF'
+                  cd /app/envflow
+                  docker compose \
+                    -f docker-compose.yml \
+                    -f docker-compose.prod.yml \
+                    --env-file .env.prod \
+                    -p envflow-prod \
+                    up -d --build
+            EOF
+
+        - name: Health check prod
+          run: |
+            echo "Waiting for prod to be ready..."
+            sleep 15
+            for i in {1..5}; do
+              STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3001/health)
+              if [ "$STATUS" = "200" ]; then
+                echo "Prod is healthy!"
+                curl -s http://localhost:3001/health
+                exit 0
+              fi
+              echo "Attempt $i failed (status: $STATUS), retrying..."
+              sleep 5
+            done
+            echo "Prod health check failed!"
+            exit 1
